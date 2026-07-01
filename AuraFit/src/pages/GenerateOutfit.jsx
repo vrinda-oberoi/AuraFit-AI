@@ -2,6 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import { generateOutfit } from "../services/outfitBuilder";
+import {
+  fetchWeatherByCoords,
+  fetchWeatherByCity,
+  getCityFromCoords,
+  mapWeatherToAuraFit
+} from "../services/weatherService";
+import { getRecentOutfitsMemory } from "../services/memoryService";
 
 const OCCASIONS = ["Casual", "Formal", "Party", "Office", "College", "Travel"];
 const WEATHER_OPTIONS = ["Hot", "Mild", "Cold", "Rainy"];
@@ -23,10 +30,16 @@ function GenerateOutfit() {
   const [loadingMessageIndex, setLoadingMessageIndex] = useState(0);
   const loadingIntervalRef = useRef(null);
 
+  // Weather Intelligence States
+  const [destination, setDestination] = useState("");
+  const [weatherDetails, setWeatherDetails] = useState(null);
+  const [isDetectingWeather, setIsDetectingWeather] = useState(false);
+  const [weatherError, setWeatherError] = useState("");
+  const [isManualOverride, setIsManualOverride] = useState(false);
+
   const canGenerate = Boolean(occasion && weather) && !isGenerating;
 
-  // Rotate through loading messages while generating, without any
-  // artificial delays in the actual generation logic itself.
+  // Rotate through loading messages while generating
   useEffect(() => {
     if (isGenerating) {
       setLoadingMessageIndex(0);
@@ -44,6 +57,57 @@ function GenerateOutfit() {
       }
     };
   }, [isGenerating]);
+
+  // Geolocation weather auto-detection on mount
+  useEffect(() => {
+    detectLocationAndWeather();
+  }, []);
+
+  const detectLocationAndWeather = async () => {
+    if (!navigator.geolocation) {
+      setWeatherError("Geolocation is not supported by your browser.");
+      return;
+    }
+    
+    setIsDetectingWeather(true);
+    setWeatherError("");
+    
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        try {
+          const { latitude, longitude } = position.coords;
+          const weatherData = await fetchWeatherByCoords(latitude, longitude);
+          const city = await getCityFromCoords(latitude, longitude);
+          const mapped = mapWeatherToAuraFit(weatherData.temp, weatherData.code);
+          
+          setWeatherDetails({
+            city,
+            temp: weatherData.temp,
+            desc: mapped.desc,
+            category: mapped.category,
+          });
+          
+          // Auto-select detected weather category by default
+          setWeather(mapped.category);
+        } catch (err) {
+          console.error("Weather auto-detection error:", err);
+          setWeatherError("Could not auto-detect weather.");
+        } finally {
+          setIsDetectingWeather(false);
+        }
+      },
+      (err) => {
+        console.warn("Location permission denied or failed:", err);
+        setWeatherError("Location access denied or unavailable.");
+        setIsDetectingWeather(false);
+      }
+    );
+  };
+
+  const handleManualWeatherSelect = (option) => {
+    setWeather(option);
+    setIsManualOverride(true);
+  };
 
   const handleGenerate = async () => {
     if (!canGenerate) return;
@@ -87,11 +151,42 @@ function GenerateOutfit() {
         return;
       }
 
+      // Determine final weather context
+      let finalWeatherCategory = weather;
+      let finalWeatherDetails = weatherDetails;
+
+      if (destination.trim()) {
+        try {
+          const destWeather = await fetchWeatherByCity(destination.trim());
+          const mapped = mapWeatherToAuraFit(destWeather.temp, destWeather.code);
+          finalWeatherCategory = mapped.category;
+          finalWeatherDetails = {
+            city: destWeather.city,
+            temp: destWeather.temp,
+            desc: mapped.desc,
+            category: mapped.category,
+          };
+        } catch (err) {
+          console.warn("Destination weather failed, falling back to local/manual:", err);
+          alert(`Failed to fetch weather for "${destination}". Falling back to today's local weather or selection.`);
+        }
+      }
+
+      // Fetch Recent Outfits from Memory Service
+      let recentOutfits = null;
+      try {
+        recentOutfits = await getRecentOutfitsMemory();
+      } catch (err) {
+        console.warn("Stylist memory failed to load:", err);
+      }
+
       const context = {
         occasion,
         season: null,
-        weather,
+        weather: finalWeatherCategory,
         preferredColors: [],
+        weatherDetails: finalWeatherDetails,
+        recentOutfits,
       };
 
       let result;
@@ -116,7 +211,7 @@ function GenerateOutfit() {
       }
 
       navigate("/outfit-preview", {
-        state: { outfit, overallScore, explanations },
+        state: { outfit, overallScore, explanations, context },
       });
     } catch (error) {
       console.error(error);
@@ -193,8 +288,39 @@ function GenerateOutfit() {
 
           <div className="mt-8">
             <h2 className="text-sm font-bold uppercase tracking-[0.2em] text-[#6D28D9]">
-              Weather
+              Destination (Optional)
             </h2>
+            <input
+              type="text"
+              placeholder="e.g. Shimla, Delhi, Paris"
+              value={destination}
+              onChange={(e) => setDestination(e.target.value)}
+              disabled={isGenerating}
+              className="mt-3 w-full rounded-2xl border border-white/50 bg-white/20 px-5 py-3.5 text-sm font-semibold text-[#6D28D9] shadow-[inset_0_1px_0_rgba(255,255,255,0.62)] outline-none backdrop-blur-md placeholder:text-[#6D28D9]/50 focus:bg-white/45"
+            />
+          </div>
+
+          <div className="mt-8">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-bold uppercase tracking-[0.2em] text-[#6D28D9]">
+                Weather
+              </h2>
+              {isDetectingWeather && (
+                <span className="text-[0.72rem] font-semibold text-[#6D28D9] animate-pulse">
+                  Detecting current weather...
+                </span>
+              )}
+              {!isDetectingWeather && weatherDetails && (
+                <span className="text-[0.72rem] font-semibold text-[#6D28D9]">
+                  {weatherDetails.city}: {weatherDetails.temp}°C, {weatherDetails.desc} {isManualOverride ? "(Overridden)" : "(Auto)"}
+                </span>
+              )}
+              {!isDetectingWeather && weatherError && (
+                <span className="text-[0.72rem] font-semibold text-red-600">
+                  {weatherError} (Manual Selection Required)
+                </span>
+              )}
+            </div>
             <div className="mt-4 flex flex-wrap gap-3">
               {WEATHER_OPTIONS.map((option) => {
                 const isSelected = option === weather;
@@ -202,7 +328,7 @@ function GenerateOutfit() {
                   <button
                     key={option}
                     type="button"
-                    onClick={() => setWeather(option)}
+                    onClick={() => handleManualWeatherSelect(option)}
                     disabled={isGenerating}
                     className={`rounded-full px-5 py-2.5 text-sm font-semibold transition duration-300 ${
                       isSelected

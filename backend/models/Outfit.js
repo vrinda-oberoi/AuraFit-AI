@@ -25,12 +25,31 @@ const outfitSchema = new mongoose.Schema(
     },
 
     top: clothingSnapshotSchema,
-
     bottom: clothingSnapshotSchema,
-
-    shoes: clothingSnapshotSchema,
-
+    shoes: clothingSnapshotSchema, // Keep for backward compatibility
+    footwear: clothingSnapshotSchema, // New slot matching frontend
     accessory: clothingSnapshotSchema,
+    outerwear: clothingSnapshotSchema, // New slot matching frontend
+
+    overallScore: {
+      type: Number,
+      default: 0,
+    },
+
+    explanations: {
+      type: [String],
+      default: [],
+    },
+
+    destination: {
+      type: String,
+      default: "",
+    },
+
+    avatarData: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
 
     occasion: String,
 

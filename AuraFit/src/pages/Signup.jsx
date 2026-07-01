@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import axios from "axios";
 import logo from "../assests/logo.png";
 
 const sparkles = [
@@ -24,10 +26,37 @@ const inputClassName =
 
 function Signup() {
   const navigate = useNavigate();
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  const handleSubmit = (event) => {
+  const handleSubmit = async (event) => {
     event.preventDefault();
-    navigate("/login");
+    if (password !== confirmPassword) {
+      alert("Passwords do not match!");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const response = await axios.post("http://localhost:5000/api/auth/signup", {
+        name,
+        email,
+        password,
+      });
+
+      localStorage.setItem("token", response.data.token);
+      localStorage.setItem("user", JSON.stringify(response.data.user));
+      alert("Account created successfully!");
+      navigate("/dashboard");
+    } catch (err) {
+      console.error(err);
+      alert(err.response?.data?.message || "Signup failed");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -199,6 +228,8 @@ function Signup() {
                   type="text"
                   autoComplete="name"
                   placeholder="Enter your full name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
                   className={inputClassName}
                   required
                 />
@@ -218,6 +249,8 @@ function Signup() {
                     type="email"
                     autoComplete="email"
                     placeholder="Enter your email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
                     className={inputClassName}
                     required
                   />
@@ -236,6 +269,8 @@ function Signup() {
                     type="password"
                     autoComplete="new-password"
                     placeholder="Create a password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
                     className={inputClassName}
                     required
                   />
@@ -254,6 +289,8 @@ function Signup() {
                     type="password"
                     autoComplete="new-password"
                     placeholder="Confirm password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
                     className={inputClassName}
                     required
                   />
@@ -262,9 +299,10 @@ function Signup() {
 
               <button
                 type="submit"
-                className="w-full rounded-full bg-gradient-to-r from-[#6D28D9] via-[#9333EA] to-[#F472B6] px-5 py-3.5 text-sm font-semibold text-white shadow-[0_14px_32px_rgba(124,58,237,0.35)] transition duration-300 hover:scale-[1.01] hover:shadow-[0_18px_40px_rgba(124,58,237,0.45)] focus:outline-none focus:ring-4 focus:ring-[#F9A8D4]/35 active:scale-[0.98]"
+                disabled={loading}
+                className="w-full rounded-full bg-gradient-to-r from-[#6D28D9] via-[#9333EA] to-[#F472B6] px-5 py-3.5 text-sm font-semibold text-white shadow-[0_14px_32px_rgba(124,58,237,0.35)] transition duration-300 hover:scale-[1.01] hover:shadow-[0_18px_40px_rgba(124,58,237,0.45)] focus:outline-none focus:ring-4 focus:ring-[#F9A8D4]/35 active:scale-[0.98] disabled:opacity-50"
               >
-                Create Account
+                {loading ? "Creating Account..." : "Create Account"}
               </button>
             </form>
 

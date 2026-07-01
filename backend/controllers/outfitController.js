@@ -2,9 +2,15 @@ const Outfit = require("../models/Outfit");
 
 const saveOutfit = async (req, res) => {
   try {
+    const payload = { ...req.body };
+    // Map footwear to shoes in db to ensure legacy compatibility
+    if (payload.footwear && !payload.shoes) {
+      payload.shoes = payload.footwear;
+    }
+
     const outfit = await Outfit.create({
       user: req.user._id,
-      ...req.body,
+      ...payload,
     });
 
     res.status(201).json(outfit);

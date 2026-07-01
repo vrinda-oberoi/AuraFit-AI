@@ -1,7 +1,7 @@
 // src/pages/WeeklyPlanner.jsx
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { getOutfitHistory } from "../utils/outfitHistory";
+import axios from "axios";
 import {
   DAYS,
   readWeekPlan,
@@ -29,14 +29,18 @@ function AssignModal({ day, history, onAssign, onClose }) {
   const filtered = useMemo(() => {
     if (!search.trim()) return history;
     const q = search.toLowerCase();
-    return history.filter(
-      (e) =>
-        e.occasion?.toLowerCase().includes(q) ||
-        e.weather?.toLowerCase().includes(q) ||
-        Object.values(e.outfit ?? {})
-          .filter(Boolean)
-          .some((item) => item.name?.toLowerCase().includes(q))
-    );
+    return history.filter((e) => {
+      const outfit = e.outfit || e || {};
+      const occasionMatch = e.occasion?.toLowerCase().includes(q);
+      const weatherMatch = e.weather?.toLowerCase().includes(q);
+      
+      const slots = [outfit.top, outfit.bottom, outfit.footwear || outfit.shoes, outfit.accessory];
+      const itemMatch = slots
+        .filter(Boolean)
+        .some((item) => item.name?.toLowerCase().includes(q));
+
+      return occasionMatch || weatherMatch || itemMatch;
+    });
   }, [history, search]);
 
   const dayLabel = day.charAt(0).toUpperCase() + day.slice(1);
@@ -108,47 +112,59 @@ function AssignModal({ day, history, onAssign, onClose }) {
             </div>
           ) : (
             <div className="flex flex-col gap-3">
-              {filtered.map((entry) => (
-                <button
-                  key={entry.id}
-                  type="button"
-                  onClick={() => onAssign(entry)}
-                  className="flex w-full items-center gap-3 rounded-[1.25rem] border border-white/50 bg-white/30 p-3 text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.65)] transition hover:bg-white/50"
-                >
-                  {/* Thumbnails */}
-                  <div className="flex shrink-0 -space-x-2">
-                    {["top", "bottom", "shoes", "accessory"].map((slot) => {
-                      const item = entry.outfit?.[slot];
-                      if (!item?.image) return null;
-                      return (
-                        <img
-                          key={slot}
-                          src={item.image}
-                          alt={item.name}
-                          className="h-9 w-9 rounded-full border-2 border-white/80 object-cover"
-                        />
-                      );
-                    })}
-                  </div>
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap gap-1.5">
-                      <span className="rounded-full bg-gradient-to-r from-[#6D28D9] to-[#9333EA] px-2.5 py-0.5 text-[0.6rem] font-bold uppercase tracking-widest text-white">
-                        {entry.occasion}
-                      </span>
-                      <span className="rounded-full border border-[#C084FC]/50 bg-[#F3E8FF]/60 px-2.5 py-0.5 text-[0.6rem] font-semibold text-[#7C3AED]">
-                        {entry.weather}
-                      </span>
-                    </div>
-                    <p className="mt-0.5 truncate text-[0.7rem] text-[#4C1D95]/65">
-                      {new Date(entry.savedOn).toLocaleDateString("en-IN", {
-                        day: "numeric",
-                        month: "short",
-                        year: "numeric",
+              {filtered.map((entry) => {
+                const outfit = entry.outfit || entry;
+                const top = outfit.top;
+                const bottom = outfit.bottom;
+                const footwear = outfit.footwear || outfit.shoes;
+                const accessory = outfit.accessory;
+                const id = entry._id || entry.id;
+                const score = entry.overallScore ?? entry.score ?? 0;
+                const date = entry.createdAt || entry.savedOn ? new Date(entry.createdAt || entry.savedOn) : null;
+
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => onAssign(entry)}
+                    className="flex w-full items-center gap-3 rounded-[1.25rem] border border-white/50 bg-white/30 p-3 text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.65)] transition hover:bg-white/55"
+                  >
+                    {/* Thumbnails */}
+                    <div className="flex shrink-0 -space-x-2">
+                      {[top, bottom, footwear, accessory].map((item, idx) => {
+                        if (!item?.image) return null;
+                        return (
+                          <img
+                            key={idx}
+                            src={item.image}
+                            alt={item.name}
+                            className="h-9 w-9 rounded-full border-2 border-white/80 object-cover"
+                          />
+                        );
                       })}
-                    </p>
-                  </div>
-                </button>
-              ))}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap gap-1.5">
+                        <span className="rounded-full bg-gradient-to-r from-[#6D28D9] to-[#9333EA] px-2.5 py-0.5 text-[0.6rem] font-bold uppercase tracking-widest text-white">
+                          {entry.occasion || "Daily"} (Score: {score})
+                        </span>
+                        <span className="rounded-full border border-[#C084FC]/50 bg-[#F3E8FF]/60 px-2.5 py-0.5 text-[0.6rem] font-semibold text-[#7C3AED]">
+                          {entry.weather || "Any"}
+                        </span>
+                      </div>
+                      {date && (
+                        <p className="mt-0.5 text-[0.7rem] text-[#4C1D95]/65">
+                          {date.toLocaleDateString("en-IN", {
+                            day: "numeric",
+                            month: "short",
+                            year: "numeric",
+                          })}
+                        </p>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
@@ -167,7 +183,7 @@ function StatCard({ label, value, gradient }) {
       >
         {value}
       </span>
-      <span className="mt-1 text-center text-xs font-medium text-[#6D28D9]/70">
+      <span className="mt-1 text-center text-xs font-semibold text-[#6D28D9]/70">
         {label}
       </span>
     </div>
@@ -180,28 +196,80 @@ export default function WeeklyPlanner() {
   const navigate = useNavigate();
 
   const [plan, setPlan] = useState(() => readWeekPlan());
-  const [history] = useState(() => getOutfitHistory());
-  const [modal, setModal] = useState(null); // null | { day, mode }
+  const [history, setHistory] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [modal, setModal] = useState(null); // null | { day, replaceIndex }
 
   const today = getTodayDayName();
 
-  // Stats
-  const plannedDays = DAYS.filter((d) => plan[d] !== null).length;
-  const remainingDays = 7 - plannedDays;
-  const totalAssigned = plannedDays; // same metric; kept explicit for clarity
+  useEffect(() => {
+    fetchHistory();
+  }, []);
 
-  const openAssign = (day) => setModal({ day, mode: "assign" });
+  const fetchHistory = async () => {
+    try {
+      const token = localStorage.getItem("token");
+      if (!token) return;
+      const response = await axios.get("http://localhost:5000/api/outfits", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      setHistory(response.data || []);
+    } catch (err) {
+      console.error("Failed to load saved outfits:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Resolve plan references to outfit objects
+  const resolvedPlan = useMemo(() => {
+    const resolved = {};
+    DAYS.forEach((day) => {
+      const refs = plan[day] || [];
+      resolved[day] = refs
+        .map((ref) => {
+          const found = history.find((h) => (h._id || h.id) === ref.id);
+          return found ? { ...found, slot: ref.slot || "all" } : null;
+        })
+        .filter(Boolean);
+    });
+    return resolved;
+  }, [plan, history]);
+
+  // Stats
+  const plannedDays = DAYS.filter((d) => resolvedPlan[d]?.length > 0).length;
+  const remainingDays = 7 - plannedDays;
+  const totalAssigned = DAYS.reduce((sum, d) => sum + (resolvedPlan[d]?.length || 0), 0);
+
+  const openAssign = (day, replaceIndex = null) => setModal({ day, replaceIndex });
   const closeModal = () => setModal(null);
 
   const handleAssign = (entry) => {
     if (!modal) return;
-    const updated = assignOutfitToDay(modal.day, entry);
+    let updated;
+    const entryId = entry._id || entry.id;
+
+    if (modal.replaceIndex !== null) {
+      const currentPlan = readWeekPlan();
+      const refs = currentPlan[modal.day] || [];
+      if (refs[modal.replaceIndex]) {
+        refs[modal.replaceIndex] = { id: entryId, slot: "all" };
+      }
+      currentPlan[modal.day] = refs;
+      writeWeekPlan(currentPlan);
+      updated = currentPlan;
+    } else {
+      updated = assignOutfitToDay(modal.day, entry, "replace");
+    }
+
     setPlan({ ...updated });
     closeModal();
   };
 
-  const handleRemove = (day) => {
-    const updated = removeOutfitFromDay(day);
+  const handleRemove = (day, idx = 0) => {
+    const updated = removeOutfitFromDay(day, idx);
     setPlan({ ...updated });
   };
 
@@ -304,8 +372,15 @@ export default function WeeklyPlanner() {
             />
           </section>
 
+          {/* Loading Indicator */}
+          {loading && (
+            <div className="py-20 text-center text-[#2E1065] font-semibold animate-pulse">
+              Loading planner data...
+            </div>
+          )}
+
           {/* No saved outfits banner */}
-          {!history.length && (
+          {!loading && !history.length && (
             <div className="mb-6 flex items-center gap-4 rounded-[1.5rem] border border-amber-300/60 bg-amber-50/40 px-5 py-4 backdrop-blur-xl">
               <svg
                 className="h-5 w-5 shrink-0 text-amber-500"
@@ -335,19 +410,21 @@ export default function WeeklyPlanner() {
           )}
 
           {/* Day cards grid */}
-          <section className="grid gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
-            {DAYS.map((day) => (
-              <PlannerDayCard
-                key={day}
-                day={day}
-                entry={plan[day]}
-                isToday={day === today}
-                onAssign={() => openAssign(day)}
-                onReplace={() => openAssign(day)}
-                onRemove={() => handleRemove(day)}
-              />
-            ))}
-          </section>
+          {!loading && (
+            <section className="grid gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
+              {DAYS.map((day) => (
+                <PlannerDayCard
+                  key={day}
+                  day={day}
+                  entries={resolvedPlan[day]}
+                  isToday={day === today}
+                  onAssign={() => openAssign(day, null)}
+                  onReplace={(idx) => openAssign(day, idx)}
+                  onRemove={(idx) => handleRemove(day, idx)}
+                />
+              ))}
+            </section>
+          )}
 
           {/* Quick nav */}
           <section className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-between">

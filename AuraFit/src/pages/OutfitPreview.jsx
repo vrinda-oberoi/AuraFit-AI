@@ -4,6 +4,8 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { generateOutfit } from "../services/outfitBuilder";
 import { getPaletteCompatibility } from "../utils/colorMatcher";
 import OutfitScoreCard from "../components/OutfitScoreCard";
+import Mannequin from "../components/Mannequin";
+import { assignOutfitToDay, readWeekPlan } from "../utils/plannerStorage";
 
 const ROLE_LABELS = {
   top: "Top",
@@ -30,34 +32,35 @@ function getHarmonyLabel(paletteScore) {
   return "Needs Improvement";
 }
 
-function OutfitDetailCard({ roleKey, item }) {
+function OutfitDetailCard({ roleKey, item, onRegenerate }) {
   const label = ROLE_LABELS[roleKey];
+  const displayLabel = label === "Footwear" ? "Shoes" : label;
 
   if (!item) {
     return (
       <div className="rounded-[1.75rem] border border-white/55 bg-white/28 p-5 text-center shadow-[inset_0_1px_0_rgba(255,255,255,0.6)] backdrop-blur-2xl">
         <p className="text-[0.72rem] font-semibold uppercase tracking-[0.22em] text-[#6D28D9]">
-          {label}
+          {displayLabel}
         </p>
         <p className="mt-4 text-sm font-medium text-[#4C1D95]/75">
-          No {label.toLowerCase()} selected.
+          No {displayLabel.toLowerCase()} selected.
         </p>
       </div>
     );
   }
 
   return (
-    <div className="overflow-hidden rounded-[1.75rem] border border-white/55 bg-white/32 shadow-[0_14px_32px_rgba(91,33,182,0.12),inset_0_1px_0_rgba(255,255,255,0.7)] backdrop-blur-2xl">
+    <div className="overflow-hidden rounded-[1.75rem] border border-white/55 bg-white/32 shadow-[0_14px_32px_rgba(91,33,182,0.14),inset_0_1px_0_rgba(255,255,255,0.7)] backdrop-blur-2xl">
       <div className="overflow-hidden">
         <img
           src={item.image || "https://via.placeholder.com/300x300?text=No+Image"}
-          alt={item.name || label}
+          alt={item.name || displayLabel}
           className="h-44 w-full object-cover"
         />
       </div>
       <div className="p-4">
         <p className="text-[0.68rem] font-semibold uppercase tracking-[0.2em] text-[#7C3AED]">
-          {label}
+          {displayLabel}
         </p>
         <h3 className="mt-1 text-base font-semibold tracking-[-0.02em] text-[#2E1065]">
           {item.name || "Unnamed item"}
@@ -76,6 +79,15 @@ function OutfitDetailCard({ roleKey, item }) {
             Fabric: {item.fabric || "Not Available"}
           </span>
         </div>
+        {onRegenerate && (
+          <button
+            type="button"
+            onClick={onRegenerate}
+            className="mt-4 w-full rounded-full border border-white/55 bg-white/38 px-4 py-2.5 text-xs font-semibold text-[#6D28D9] shadow-[inset_0_1px_0_rgba(255,255,255,0.62)] backdrop-blur-md transition hover:bg-white/48 flex items-center justify-center gap-1.5"
+          >
+            <span>🔄</span> Change {displayLabel}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -105,6 +117,13 @@ function OutfitPreview() {
   const [wardrobe, setWardrobe] = useState([]);
   const [saveState, setSaveState] = useState("idle"); // idle | saved
   const [isRegenerating, setIsRegenerating] = useState(false);
+
+  // Smart Save Dialog States
+  const [saveModalStep, setSaveModalStep] = useState("idle"); // idle | askPlanner | selectDay | conflict
+  const [selectedDay, setSelectedDay] = useState(null);
+  const [savedOutfitData, setSavedOutfitData] = useState(null);
+
+  const DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
 
   useEffect(() => {
     fetchWardrobe();
@@ -158,31 +177,13 @@ function OutfitPreview() {
 
     try {
       // Reuse the existing Fashion Brain scoring/filtering completely.
-      // To offer a different valid combination (rather than randomly
-      // picking clothes), exclude the currently selected pieces and
-      // let the brain pick its next-best valid combination.
-      const currentItemIds = [
-        outfit.top?._id,
-        outfit.bottom?._id,
-        outfit.footwear?._id,
-        outfit.accessory?._id,
-        outfit.outerwear?._id,
-      ].filter(Boolean);
-
-      const remainingWardrobe = wardrobe.filter(
-        (item) => !currentItemIds.includes(item._id)
-      );
-
-      let result = generateOutfit(remainingWardrobe, context);
-
-      const isValid =
-        result?.outfit?.top && result?.outfit?.bottom && result?.outfit?.footwear;
-
-      // Fall back to scoring the full wardrobe again if excluding the
-      // current picks left us without enough pieces for a valid outfit.
-      if (!isValid) {
-        result = generateOutfit(wardrobe, context);
-      }
+      // Pass the current outfit as options.previousOutfit so the brain can
+      // apply diversity penalties and select the next best combination.
+      // Use a larger candidateLimit on regeneration to expand search space.
+      const result = generateOutfit(wardrobe, context, {
+        previousOutfit: outfit,
+        candidateLimit: 10,
+      });
 
       if (!result?.outfit?.top || !result?.outfit?.bottom || !result?.outfit?.footwear) {
         alert(
@@ -197,6 +198,40 @@ function OutfitPreview() {
     } catch (error) {
       console.error(error);
       alert("Something went wrong while regenerating your outfit. Please try again.");
+    } finally {
+      setIsRegenerating(false);
+    }
+  };
+
+  const handleRegenerateSlot = (slotKey) => {
+    if (!outfit || wardrobe.length === 0) {
+      alert("We need your wardrobe loaded before regenerating. Please try again.");
+      return;
+    }
+
+    setIsRegenerating(true);
+    setSaveState("idle");
+
+    try {
+      const result = generateOutfit(wardrobe, context, {
+        previousOutfit: outfit,
+        regenerateSlot: slotKey,
+        candidateLimit: 10,
+      });
+
+      if (!result?.outfit?.top || !result?.outfit?.bottom || !result?.outfit?.footwear) {
+        alert(
+          "Your wardrobe doesn't contain enough clothing to build a complete outfit."
+        );
+        return;
+      }
+
+      setOutfit(result.outfit);
+      setOverallScore(result.overallScore);
+      setExplanations(result.explanations || []);
+    } catch (error) {
+      console.error(error);
+      alert("Something went wrong while regenerating your clothing item. Please try again.");
     } finally {
       setIsRegenerating(false);
     }
@@ -221,7 +256,7 @@ function OutfitPreview() {
             }
           : null;
 
-      await axios.post(
+      const response = await axios.post(
         "http://localhost:5000/api/outfits",
         {
           name: context.occasion ? `${context.occasion} Outfit` : "Generated Outfit",
@@ -234,6 +269,7 @@ function OutfitPreview() {
           explanations,
           occasion: context.occasion,
           weather: context.weather,
+          destination: context.weatherDetails?.city || "",
           createdAt: new Date().toISOString(),
         },
         {
@@ -244,10 +280,10 @@ function OutfitPreview() {
       );
 
       setSaveState("saved");
-      alert("Outfit Saved Successfully!");
+      setSavedOutfitData(response.data);
+      setSaveModalStep("askPlanner");
     } catch (error) {
       console.error(error);
-
       alert(error.response?.data?.message || "Failed to save outfit");
     }
   };
@@ -358,12 +394,21 @@ function OutfitPreview() {
         {context.weather && (
           <section className="mb-6 rounded-[2rem] border border-white/55 bg-white/30 p-5 shadow-[0_16px_34px_rgba(91,33,182,0.12),inset_0_1px_0_rgba(255,255,255,0.74)] backdrop-blur-2xl sm:p-6">
             <h2 className="text-sm font-bold uppercase tracking-[0.2em] text-[#6D28D9]">
-              Today's Context
+              Weather Context
             </h2>
-            <div className="mt-3 flex flex-wrap items-center gap-3">
-              <span className="text-2xl font-bold tracking-[-0.03em] text-[#2E1065]">
-                {context.weather}
-              </span>
+            <div className="mt-3 flex flex-col gap-2">
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="text-2xl font-bold tracking-[-0.03em] text-[#2E1065]">
+                  {context.weatherDetails?.city ? `${context.weatherDetails.city}: ` : ""}
+                  {context.weatherDetails?.temp != null ? `${context.weatherDetails.temp}°C ` : ""}
+                  ({context.weather})
+                </span>
+                {context.weatherDetails?.desc && (
+                  <span className="rounded-full border border-[#C084FC]/40 bg-[#C084FC]/10 px-3 py-1 text-xs font-semibold text-[#6D28D9]">
+                    {context.weatherDetails.desc}
+                  </span>
+                )}
+              </div>
               {weatherTip && (
                 <span className="text-sm font-medium text-[#4C1D95]/82">
                   {weatherTip}
@@ -373,15 +418,33 @@ function OutfitPreview() {
           </section>
         )}
 
-        {/* Section 3 & 4: Selected Outfit */}
-        <section className="mb-6 grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
-          {REQUIRED_ROLES.map((roleKey) => (
-            <OutfitDetailCard key={roleKey} roleKey={roleKey} item={outfit[roleKey]} />
-          ))}
-          {OPTIONAL_ROLES.map((roleKey) => (
-            <OutfitDetailCard key={roleKey} roleKey={roleKey} item={outfit[roleKey]} />
-          ))}
-        </section>
+        {/* Section 3 & 4: Selected Outfit + AI Mannequin Preview Layout */}
+        <div className="mb-6 grid gap-6 lg:grid-cols-[1fr_320px] items-start">
+          {/* Left Column: Generated Outfit Cards */}
+          <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
+            {REQUIRED_ROLES.map((roleKey) => (
+              <OutfitDetailCard
+                key={roleKey}
+                roleKey={roleKey}
+                item={outfit[roleKey]}
+                onRegenerate={() => handleRegenerateSlot(roleKey)}
+              />
+            ))}
+            {OPTIONAL_ROLES.map((roleKey) => (
+              <OutfitDetailCard
+                key={roleKey}
+                roleKey={roleKey}
+                item={outfit[roleKey]}
+                onRegenerate={() => handleRegenerateSlot(roleKey)}
+              />
+            ))}
+          </div>
+
+          {/* Right Column: AI Mannequin Preview */}
+          <div className="lg:sticky lg:top-6">
+            <Mannequin outfit={outfit} />
+          </div>
+        </div>
 
         {/* Section 5 & 6: Buttons */}
         <section className="mt-2 flex flex-col gap-3 sm:flex-row sm:justify-between">
@@ -403,6 +466,122 @@ function OutfitPreview() {
           </button>
         </section>
       </main>
+
+      {/* Smart Save Flow dialog modal */}
+      {saveModalStep !== "idle" && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-[#2E1065]/40 backdrop-blur-sm" onClick={() => setSaveModalStep("idle")} />
+          
+          <div className="relative z-10 w-full max-w-md rounded-[2rem] border border-white/60 bg-white/40 p-6 shadow-[0_24px_60px_rgba(91,33,182,0.25),inset_0_1px_0_rgba(255,255,255,0.85)] backdrop-blur-3xl text-center">
+            {saveModalStep === "askPlanner" && (
+              <>
+                <h3 className="text-lg font-bold text-[#2E1065]">Outfit Saved Successfully!</h3>
+                <p className="mt-2 text-sm text-[#4C1D95]/85">
+                  Would you like to add this outfit to your Weekly Planner?
+                </p>
+                <div className="mt-6 flex justify-center gap-3">
+                  <button
+                    key="yes"
+                    type="button"
+                    onClick={() => setSaveModalStep("selectDay")}
+                    className="rounded-full bg-gradient-to-r from-[#6D28D9] to-[#9333EA] px-6 py-2.5 text-sm font-semibold text-white shadow-[0_8px_20px_rgba(124,58,237,0.25)] transition hover:scale-[1.02]"
+                  >
+                    Yes
+                  </button>
+                  <button
+                    key="no"
+                    type="button"
+                    onClick={() => setSaveModalStep("idle")}
+                    className="rounded-full border border-white/55 bg-white/38 px-6 py-2.5 text-sm font-semibold text-[#6D28D9] shadow-[inset_0_1px_0_rgba(255,255,255,0.62)] transition hover:bg-white/50"
+                  >
+                    No
+                  </button>
+                </div>
+              </>
+            )}
+
+            {saveModalStep === "selectDay" && (
+              <>
+                <h3 className="text-lg font-bold text-[#2E1065]">Select a Day</h3>
+                <p className="mt-1 text-xs text-[#4C1D95]/60">Choose which day to schedule this outfit</p>
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                  {DAYS.map((day) => {
+                    const label = day.charAt(0).toUpperCase() + day.slice(1);
+                    return (
+                      <button
+                        key={day}
+                        type="button"
+                        onClick={() => {
+                          const currentPlan = readWeekPlan();
+                          const existingRefs = currentPlan[day] || [];
+                          if (existingRefs.length > 0) {
+                            setSelectedDay(day);
+                            setSaveModalStep("conflict");
+                          } else {
+                            assignOutfitToDay(day, savedOutfitData, "replace");
+                            alert(`Outfit added to ${label}!`);
+                            setSaveModalStep("idle");
+                          }
+                        }}
+                        className="rounded-full border border-white/50 bg-white/30 py-2.5 text-xs font-semibold text-[#6D28D9] transition hover:bg-white/50"
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSaveModalStep("askPlanner")}
+                  className="mt-4 text-xs font-semibold text-[#6D28D9] underline"
+                >
+                  Back
+                </button>
+              </>
+            )}
+
+            {saveModalStep === "conflict" && (
+              <>
+                <h3 className="text-lg font-bold text-amber-800">Conflict Detected</h3>
+                <p className="mt-2 text-sm text-[#4C1D95]/80">
+                  {selectedDay ? selectedDay.charAt(0).toUpperCase() + selectedDay.slice(1) : "This day"} already has an outfit scheduled.
+                </p>
+                <div className="mt-6 flex flex-col gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      assignOutfitToDay(selectedDay, savedOutfitData, "replace");
+                      alert("Outfit replaced successfully!");
+                      setSaveModalStep("idle");
+                    }}
+                    className="w-full rounded-full bg-gradient-to-r from-red-500 to-amber-500 py-2.5 text-xs font-semibold text-white shadow-md transition hover:scale-[1.01]"
+                  >
+                    Replace Existing
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      assignOutfitToDay(selectedDay, savedOutfitData, "keepBoth");
+                      alert("Outfit added alongside existing!");
+                      setSaveModalStep("idle");
+                    }}
+                    className="w-full rounded-full bg-gradient-to-r from-[#6D28D9] to-[#9333EA] py-2.5 text-xs font-semibold text-white shadow-md transition hover:scale-[1.01]"
+                  >
+                    Keep Both
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSaveModalStep("selectDay")}
+                    className="w-full rounded-full border border-white/55 bg-white/38 py-2.5 text-xs font-semibold text-[#6D28D9] transition hover:bg-white/50"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -49,6 +49,8 @@ const CATEGORY_ROLE_MAP = {
   kurtis: "Top",
 
   // Bottom
+  bottom: "Bottom",
+  bottoms: "Bottom",
   jeans: "Bottom",
   trousers: "Bottom",
   trouser: "Bottom",
@@ -79,6 +81,7 @@ const CATEGORY_ROLE_MAP = {
   sunglasses: "Accessory",
 
   // Outerwear
+  outerwear: "Outerwear",
   jacket: "Outerwear",
   jackets: "Outerwear",
   coat: "Outerwear",
@@ -94,6 +97,11 @@ const ALL_ROLES = [...REQUIRED_ROLES, ...OPTIONAL_ROLES];
 function normalizeCategory(category) {
   if (!category || typeof category !== "string") return "";
   return category.trim().toLowerCase();
+}
+
+function getItemId(item) {
+  if (!item) return null;
+  return item._id || item.id || null;
 }
 
 /**
@@ -152,7 +160,84 @@ function buildExplanations(reasonDetailsList) {
 function calculateOverallScore(selectedScores) {
   if (selectedScores.length === 0) return 0;
   const total = selectedScores.reduce((sum, score) => sum + score, 0);
-  return Math.round(total / selectedScores.length);
+  return Math.round(total / (selectedScores.length * 2));
+}
+
+/**
+ * Evaluates memory cooldown penalties and reasons for an item being recently worn
+ */
+function evaluateRecentMemoryPenalty(item, role, context, config) {
+  if (!context || !context.recentOutfits) {
+    return { penalty: 0, reasons: [] };
+  }
+
+  const penalties = config.penalties || {};
+  let totalPenalty = 0;
+  const reasons = [];
+
+  const id = getItemId(item);
+  if (!id) return { penalty: 0, reasons: [] };
+
+  const getRoleItem = (entry) => {
+    const o = entry.outfit || entry;
+    return o[role.toLowerCase()] || (role.toLowerCase() === "footwear" ? o.shoes : null);
+  };
+
+  // Check Today
+  const todayEntry = context.recentOutfits.today;
+  if (todayEntry) {
+    const todayItem = getRoleItem(todayEntry);
+    if (getItemId(todayItem) === id) {
+      totalPenalty += penalties.wornToday ?? 40;
+      reasons.push({
+        type: "cooldown",
+        message: `This ${role.toLowerCase()} was recently worn today, so another strong alternative was preferred.`
+      });
+    }
+  }
+
+  // Check Yesterday
+  const yesterdayEntry = context.recentOutfits.yesterday;
+  if (yesterdayEntry) {
+    const yesterdayItem = getRoleItem(yesterdayEntry);
+    if (getItemId(yesterdayItem) === id) {
+      totalPenalty += penalties.wornYesterday ?? 25;
+      reasons.push({
+        type: "cooldown",
+        message: `This ${role.toLowerCase()} was recently worn yesterday, so another strong alternative was preferred.`
+      });
+    }
+  }
+
+  // Check Last 7 (excluding today/yesterday to not double penalize)
+  const last7 = context.recentOutfits.last7 || [];
+  const inLast7 = last7.some((entry) => {
+    if (entry === todayEntry || entry === yesterdayEntry) return false;
+    return getItemId(getRoleItem(entry)) === id;
+  });
+  if (inLast7) {
+    totalPenalty += penalties.wornLast7Days ?? 10;
+    reasons.push({
+      type: "cooldown",
+      message: `This ${role.toLowerCase()} was recently worn in the last 7 outfits, so another strong alternative was preferred.`
+    });
+  }
+
+  // Check Last 30 (excluding today/yesterday/last7)
+  const last30 = context.recentOutfits.last30 || [];
+  const inLast30 = last30.some((entry) => {
+    if (entry === todayEntry || entry === yesterdayEntry || last7.includes(entry)) return false;
+    return getItemId(getRoleItem(entry)) === id;
+  });
+  if (inLast30) {
+    totalPenalty += penalties.wornLast30Days ?? 5;
+    reasons.push({
+      type: "cooldown",
+      message: `This ${role.toLowerCase()} was recently worn in the last 30 outfits, so another strong alternative was preferred.`
+    });
+  }
+
+  return { penalty: totalPenalty, reasons };
 }
 
 /**
@@ -178,7 +263,28 @@ function buildRequiredCombination(grouped, requiredRoles, context, config) {
   }
 
   const candidatesByRole = rolesWithCandidates.reduce((acc, role) => {
-    acc[role] = grouped[role].slice(0, config.candidateLimit);
+    const isRegeneratingThisRole = config.regenerateSlot && config.regenerateSlot.toLowerCase() === role.toLowerCase();
+    const isRegenerationSession = config.previousOutfit && config.regenerateSlot;
+
+    if (isRegenerationSession && !isRegeneratingThisRole) {
+      // It is fixed. Find the item in grouped[role] to get its actual score and reasons
+      const prevItem = config.previousOutfit[role.toLowerCase()];
+      const prevId = prevItem && (prevItem._id || prevItem.id);
+      const foundRanked = prevId && (grouped[role] || []).find((r) => {
+        const currId = r.item._id || r.item.id;
+        return currId && currId === prevId;
+      });
+
+      if (foundRanked) {
+        acc[role] = [foundRanked];
+      } else if (prevItem) {
+        acc[role] = [{ item: prevItem, score: prevItem.score || 0, reasonDetails: [] }];
+      } else {
+        acc[role] = [];
+      }
+    } else {
+      acc[role] = grouped[role].slice(0, config.candidateLimit);
+    }
     return acc;
   }, {});
 
@@ -186,32 +292,112 @@ function buildRequiredCombination(grouped, requiredRoles, context, config) {
     const chosenEntries = Object.entries(chosen);
     const items = chosenEntries.map(([, rankedItem]) => rankedItem.item);
 
-    let totalScore = 0;
+    let totalSelectionScore = 0;
     const perRole = {};
 
     chosenEntries.forEach(([role, rankedItem]) => {
       const others = items.filter((i) => i !== rankedItem.item);
       const compat = scoreCompatibility(rankedItem.item, others, context);
-      const combinedScore = rankedItem.score + compat.score;
+      
+      const cleanCombinedScore = rankedItem.score + compat.score;
+      let selectionCombinedScore = cleanCombinedScore;
 
-      totalScore += combinedScore;
+      // Apply item-level penalty if this item was in the previous outfit
+      if (config.previousOutfit) {
+        const prevItem = config.previousOutfit[role.toLowerCase()];
+        if (prevItem) {
+          const prevId = getItemId(prevItem);
+          const currId = getItemId(rankedItem.item);
+          if (prevId && currId && prevId === currId) {
+            // Apply a stronger penalty to required roles to encourage changing them
+            selectionCombinedScore -= 30;
+          }
+        }
+      }
+
+      // Phase 6: Memory Cooldown Penalty
+      const memory = evaluateRecentMemoryPenalty(rankedItem.item, role, context, config);
+      selectionCombinedScore -= memory.penalty;
+
+      totalSelectionScore += selectionCombinedScore;
       perRole[role] = {
         item: rankedItem.item,
-        score: combinedScore,
-        reasonDetails: [...(rankedItem.reasonDetails || []), ...compat.reasonDetails],
+        score: cleanCombinedScore,
+        reasonDetails: [
+          ...(rankedItem.reasonDetails || []),
+          ...compat.reasonDetails,
+          ...memory.reasons,
+        ],
       };
     });
 
-    return { totalScore, perRole };
+    // Apply penalties for reusing combinations
+    if (config.previousOutfit) {
+      let matchesAll = true;
+      let matchesCoreCount = 0; // Tracks Top + Bottom reuse
+
+      rolesWithCandidates.forEach((role) => {
+        const prevItem = config.previousOutfit[role.toLowerCase()];
+        const currentItem = chosen[role]?.item;
+        if (prevItem && currentItem) {
+          const prevId = getItemId(prevItem);
+          const currId = getItemId(currentItem);
+          if (prevId && currId && prevId === currId) {
+            if (role === "Top" || role === "Bottom") {
+              matchesCoreCount++;
+            }
+          } else {
+            matchesAll = false;
+          }
+        } else {
+          matchesAll = false;
+        }
+      });
+
+      // 1. Core-silhouette reuse penalty (Top + Bottom are both reused)
+      if (matchesCoreCount === 2) {
+        totalSelectionScore -= 150;
+      }
+
+      // 2. Full combination reuse penalty (all matching)
+      if (matchesAll && rolesWithCandidates.length > 0) {
+        totalSelectionScore -= 1000;
+      }
+    }
+
+    // Phase 6: Avoid duplicate combination yesterday
+    if (context.recentOutfits?.yesterday) {
+      const yesterday = context.recentOutfits.yesterday;
+      const yesterdayOutfit = yesterday.outfit || yesterday;
+      
+      let matchesAllYesterday = true;
+      rolesWithCandidates.forEach((role) => {
+        const yesterdayItem = yesterdayOutfit[role.toLowerCase()] || (role.toLowerCase() === "footwear" ? yesterdayOutfit.shoes : null);
+        const currentItem = chosen[role]?.item;
+        if (yesterdayItem && currentItem) {
+          if (getItemId(yesterdayItem) !== getItemId(currentItem)) {
+            matchesAllYesterday = false;
+          }
+        } else {
+          matchesAllYesterday = false;
+        }
+      });
+
+      if (matchesAllYesterday && rolesWithCandidates.length > 0) {
+        totalSelectionScore -= (config.penalties?.exactDuplicateYesterday ?? 150);
+      }
+    }
+
+    return { totalSelectionScore, perRole };
   };
 
   let best = null;
 
   const search = (roleIndex, chosen) => {
     if (roleIndex === rolesWithCandidates.length) {
-      const { totalScore, perRole } = evaluate(chosen);
-      if (!best || totalScore > best.totalScore) {
-        best = { totalScore, perRole };
+      const { totalSelectionScore, perRole } = evaluate(chosen);
+      if (!best || totalSelectionScore > best.totalSelectionScore) {
+        best = { totalSelectionScore, perRole };
       }
       return;
     }
@@ -234,11 +420,92 @@ function buildRequiredCombination(grouped, requiredRoles, context, config) {
  * is where the actual role-agnostic selection algorithm lives.
  */
 function pickOptionalRole(grouped, role, assembledItems, context, config, typeLabel) {
+  const isRegeneratingThisRole = config.regenerateSlot && config.regenerateSlot.toLowerCase() === typeLabel;
+  const isRegenerationSession = config.previousOutfit && config.regenerateSlot;
+
+  if (isRegenerationSession && !isRegeneratingThisRole) {
+    // Keep it fixed. Find the previous item in grouped or fallback.
+    const prevItem = config.previousOutfit[typeLabel];
+    if (!prevItem) return null;
+
+    const prevId = getItemId(prevItem);
+    const foundRanked = prevId && (grouped[role] || []).find((r) => {
+      const currId = getItemId(r.item);
+      return currId && currId === prevId;
+    });
+
+    if (foundRanked) {
+      const compat = scoreCompatibility(foundRanked.item, assembledItems, context);
+      return {
+        item: foundRanked.item,
+        score: foundRanked.score + compat.score,
+        reasonDetails: [...(foundRanked.reasonDetails || []), ...compat.reasonDetails],
+      };
+    } else {
+      const compat = scoreCompatibility(prevItem, assembledItems, context);
+      return {
+        item: prevItem,
+        score: compat.score,
+        reasonDetails: compat.reasonDetails,
+      };
+    }
+  }
+
   const candidates = (grouped[role] || []).slice(0, config.candidateLimit);
   if (candidates.length === 0) return null;
 
-  const { selection } = selectBestAccessory(candidates, assembledItems, context, typeLabel);
-  return selection; // { item, score, reasonDetails } or null
+  // Apply item penalty for selection
+  let selectionCandidates = candidates.map((candidate) => {
+    let penalty = 0;
+    const reasons = [];
+
+    if (config.previousOutfit) {
+      const prevItem = config.previousOutfit[typeLabel];
+      if (prevItem) {
+        const prevId = getItemId(prevItem);
+        const currId = getItemId(candidate.item);
+        if (prevId && currId && prevId === currId) {
+          penalty += 30;
+        }
+      }
+    }
+
+    // Phase 6: Memory Cooldown Penalty
+    const memory = evaluateRecentMemoryPenalty(candidate.item, role, context, config);
+    penalty += memory.penalty;
+    reasons.push(...memory.reasons);
+
+    if (penalty > 0) {
+      return {
+        ...candidate,
+        score: candidate.score - penalty,
+        reasonDetails: [...(candidate.reasonDetails || []), ...reasons],
+      };
+    }
+    return candidate;
+  });
+
+  const { selection } = selectBestAccessory(selectionCandidates, assembledItems, context, typeLabel);
+  if (!selection) return null;
+
+  // Restore clean combined score for returned selection
+  const originalCandidate = candidates.find((c) => {
+    const selId = getItemId(selection.item);
+    const candId = getItemId(c.item);
+    return selId && candId && selId === candId;
+  });
+
+  if (originalCandidate) {
+    const compat = scoreCompatibility(selection.item, assembledItems, context);
+    selection.score = originalCandidate.score + compat.score;
+    // Add memory reasons to final selection if selected candidate was penalized
+    const selectedPenalized = selectionCandidates.find((sc) => getItemId(sc.item) === getItemId(selection.item));
+    if (selectedPenalized) {
+      selection.reasonDetails = [...(selectedPenalized.reasonDetails || []), ...compat.reasonDetails];
+    }
+  }
+
+  return selection;
 }
 
 /**

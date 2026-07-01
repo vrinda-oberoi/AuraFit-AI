@@ -13,6 +13,15 @@ const DEFAULT_CONFIG = {
   // thorough search, but grows combinatorially with required roles
   // (roughly candidateLimit ^ numberOfRequiredRolesWithCandidates).
   candidateLimit: 4,
+
+  // Configurable diversity penalties for recent stylist memory
+  penalties: {
+    wornToday: 40,                // Penalty if item was worn today
+    wornYesterday: 25,            // Penalty if item was worn yesterday
+    wornLast7Days: 10,            // Penalty if item was worn in the last 7 outfits
+    wornLast30Days: 5,             // Penalty if item was worn in the last 30 outfits
+    exactDuplicateYesterday: 150, // Penalty if whole outfit combination is identical to yesterday's
+  }
 };
 
 /**
