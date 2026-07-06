@@ -46,6 +46,14 @@ const userSchema = new mongoose.Schema(
     location: {
       type: String,
     },
+
+    age: {
+      type: Number,
+    },
+
+    wardrobeSize: {
+      type: String,
+    },
   },
   {
     timestamps: true,

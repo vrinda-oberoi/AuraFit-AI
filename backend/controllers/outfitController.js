@@ -23,13 +23,36 @@ const saveOutfit = async (req, res) => {
 
 const getOutfits = async (req, res) => {
   try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 50;
+    const skip = (page - 1) * limit;
+
     const outfits = await Outfit.find({
       user: req.user._id,
-    }).sort({
-      createdAt: -1,
-    });
+    })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
 
     res.json(outfits);
+  } catch (error) {
+    res.status(500).json({
+      message: error.message,
+    });
+  }
+};
+
+const toggleFavorite = async (req, res) => {
+  try {
+    const outfit = await Outfit.findOne({ _id: req.params.id, user: req.user._id });
+    if (!outfit) {
+      return res.status(404).json({ message: "Outfit not found" });
+    }
+    
+    outfit.favorite = !outfit.favorite;
+    await outfit.save();
+
+    res.json(outfit);
   } catch (error) {
     res.status(500).json({
       message: error.message,
@@ -54,8 +77,32 @@ const deleteOutfit = async (req, res) => {
   }
 };
 
+const updateOutfit = async (req, res) => {
+  try {
+    const outfit = await Outfit.findOne({ _id: req.params.id, user: req.user._id });
+    if (!outfit) {
+      return res.status(404).json({ message: "Outfit not found" });
+    }
+    
+    if (req.body.name) {
+      outfit.name = req.body.name;
+    }
+    
+    // Add additional updateable fields as needed in the future
+
+    await outfit.save();
+    res.json(outfit);
+  } catch (error) {
+    res.status(500).json({
+      message: error.message,
+    });
+  }
+};
+
 module.exports = {
   saveOutfit,
   getOutfits,
   deleteOutfit,
+  toggleFavorite,
+  updateOutfit,
 };

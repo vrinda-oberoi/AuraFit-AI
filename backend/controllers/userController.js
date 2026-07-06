@@ -10,12 +10,15 @@ const updateProfile = async (req, res) => {
       });
     }
 
-    user.height = req.body.height;
-    user.weight = req.body.weight;
-    user.bodyType = req.body.bodyType;
-    user.stylePreferences =
-      req.body.stylePreferences;
-    user.location = req.body.location;
+    if (req.body.name) {
+      user.name = req.body.name;
+    }
+
+    if (req.body.height !== undefined) user.height = req.body.height;
+    if (req.body.weight !== undefined) user.weight = req.body.weight;
+    if (req.body.bodyType !== undefined) user.bodyType = req.body.bodyType;
+    if (req.body.stylePreferences !== undefined) user.stylePreferences = req.body.stylePreferences;
+    if (req.body.location !== undefined) user.location = req.body.location;
 
     user.profileCompleted = true;
 
@@ -32,6 +35,50 @@ const updateProfile = async (req, res) => {
   }
 };
 
+const getProfile = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).select("-password");
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    res.status(200).json({
+      user,
+    });
+  } catch (error) {
+    res.status(500).json({
+      message: error.message,
+    });
+  }
+};
+
+const deleteAccount = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    await User.findByIdAndDelete(req.user._id);
+
+    res.status(200).json({
+      message: "Account deleted successfully",
+    });
+  } catch (error) {
+    res.status(500).json({
+      message: error.message,
+    });
+  }
+};
+
 module.exports = {
   updateProfile,
+  getProfile,
+  deleteAccount,
 };
